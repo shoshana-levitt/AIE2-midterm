@@ -3,3 +3,13 @@ cohere==4.37
 openai
 tiktoken
 python-dotenv==1.0.0
+langchain
+langchain-openai
+langchain_core
+langchain-community
+langchainhub
+openai
+ragas
+qdrant-client
+pymupdf
+pandas
