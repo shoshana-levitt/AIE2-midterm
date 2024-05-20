@@ -1,25 +1,76 @@
 # You can find this code for Chainlit python streaming here (https://docs.chainlit.io/concepts/streaming/python)
 
-# OpenAI Chat completion
-import os
-from openai import AsyncOpenAI  # importing openai for API usage
-import chainlit as cl  # importing chainlit for our app
-from chainlit.prompt import Prompt, PromptMessage  # importing prompt tools
-from chainlit.playground.providers import ChatOpenAI  # importing ChatOpenAI tools
+# Import dependencies
+from langchain_community.document_loaders import PyMuPDFLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_openai import OpenAIEmbeddings
+from langchain_community.vectorstores import Qdrant
+from langchain import hub
+from langchain.prompts import ChatPromptTemplate
 from dotenv import load_dotenv
+import chainlit as cl
+from langchain.retrievers import MultiQueryRetriever
 
+# Get API key
 load_dotenv()
 
-# ChatOpenAI Templates
-system_template = """You are a helpful assistant who always speaks in a pleasant tone!
+# Load Data
+loader = PyMuPDFLoader(
+    "/Users/SKTL/Desktop/Coding/VS-Code/AIE2-midterm/meta_pdf.pdf",
+)
+documents = loader.load()
+
+# Chunking
+text_splitter = RecursiveCharacterTextSplitter(
+    chunk_size = 400,
+    chunk_overlap = 100
+)
+documents = text_splitter.split_documents(documents)
+
+# Load OpenAI Embeddings Model
+embeddings = OpenAIEmbeddings(
+    model="text-embedding-3-small"
+)
+
+# Create QDrant VectorStore
+qdrant_vector_store = Qdrant.from_documents(
+    documents,
+    embeddings,
+    location=":memory:",
+    collection_name="meta-10-k-filings",
+)
+
+# Create Retriever
+retriever = qdrant_vector_store.as_retriever()
+
+# Template
+template = """Answer the question based only on the following context. If you cannot answer the question with the context, please respond with 'I don't know':
+
+Context:
+{context}
+
+Question:
+{question}
 """
 
-user_template = """{input}
-Think through your response step by step.
-"""
+prompt = ChatPromptTemplate.from_template(template)
 
+from operator import itemgetter
+from langchain_openai import ChatOpenAI
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnablePassthrough
 
-@cl.on_chat_start  # marks a function that will be executed at the start of a user session
+primary_qa_llm = ChatOpenAI(model_name="gpt-3.5-turbo", temperature=0)
+retriever = MultiQueryRetriever.from_llm(retriever=retriever, llm=primary_qa_llm)
+
+retrieval_augmented_qa_chain = (
+    {"context": itemgetter("question") | retriever, "question": itemgetter("question")}
+    | RunnablePassthrough.assign(context=itemgetter("context"))
+    | {"response": prompt | primary_qa_llm, "context": itemgetter("context")}
+)
+
+# Chainlit App
+@cl.on_chat_start
 async def start_chat():
     settings = {
         "model": "gpt-3.5-turbo",
@@ -29,52 +80,12 @@ async def start_chat():
         "frequency_penalty": 0,
         "presence_penalty": 0,
     }
-
     cl.user_session.set("settings", settings)
 
-
-@cl.on_message  # marks a function that should be run each time the chatbot receives a message from a user
+@cl.on_message
 async def main(message: cl.Message):
-    settings = cl.user_session.get("settings")
-
-    client = AsyncOpenAI()
-
-    print(message.content)
-
-    prompt = Prompt(
-        provider=ChatOpenAI.id,
-        messages=[
-            PromptMessage(
-                role="system",
-                template=system_template,
-                formatted=system_template,
-            ),
-            PromptMessage(
-                role="user",
-                template=user_template,
-                formatted=user_template.format(input=message.content),
-            ),
-        ],
-        inputs={"input": message.content},
-        settings=settings,
-    )
-
-    print([m.to_openai() for m in prompt.messages])
-
-    msg = cl.Message(content="")
-
-    # Call OpenAI
-    async for stream_resp in await client.chat.completions.create(
-        messages=[m.to_openai() for m in prompt.messages], stream=True, **settings
-    ):
-        token = stream_resp.choices[0].delta.content
-        if not token:
-            token = ""
-        await msg.stream_token(token)
-
-    # Update the prompt object with the completion
-    prompt.completion = msg.content
-    msg.prompt = prompt
-
-    # Send and close the message stream
+    chainlit_question = message.content
+    response = retrieval_augmented_qa_chain.invoke({"question": chainlit_question})
+    chainlit_answer = response["response"].content
+    msg = cl.Message(content=chainlit_answer)
     await msg.send()
