@@ -11,12 +11,11 @@ from dotenv import load_dotenv
 import chainlit as cl
 from langchain.retrievers import MultiQueryRetriever
 
-# Get API key
-load_dotenv()
+# Get API keyß
 
 # Load Data
 loader = PyMuPDFLoader(
-    "/Users/SKTL/Desktop/Coding/VS-Code/AIE2-midterm/meta_pdf.pdf",
+    "./meta_pdf.pdf"
 )
 documents = loader.load()
 
